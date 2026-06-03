@@ -1,0 +1,5 @@
+# Placeholder classifier tidak butuh dependency tambahan.
+# Setelah IndoBERT selesai, tambahkan:
+# torch>=2.0.0
+# transformers>=4.40.0
+# sentencepiece
