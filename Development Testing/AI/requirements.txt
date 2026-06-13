@@ -1,5 +1,16 @@
-# Placeholder classifier tidak butuh dependency tambahan.
-# Setelah IndoBERT selesai, tambahkan:
+# ============================================================
+# AI SHIELD — Dependencies
+# ============================================================
+
+# --- Evaluasi Model (evaluasi_model.py) ---
+scikit-learn>=1.4.0    # Accuracy, F1, Precision, Recall, Confusion Matrix, Kappa, MCC
+pandas>=2.0.0          # Export hasil evaluasi ke CSV
+numpy>=1.26.0          # Kalkulasi numerik (dibutuhkan scikit-learn)
+
+# --- Setelah IndoBERT selesai di-fine-tune, uncomment baris di bawah ---
 # torch>=2.0.0
 # transformers>=4.40.0
 # sentencepiece
+# accelerate>=0.29.3
+# datasets>=2.19.0
+# evaluate>=0.4.1
