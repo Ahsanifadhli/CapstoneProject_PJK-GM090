@@ -1,5 +1,4 @@
-import React from "react"
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { getRooms } from '../services/api'
 
 const ROOM_META = {
@@ -7,19 +6,30 @@ const ROOM_META = {
   'forum-tugas':    { icon:'📚', color:'#f0fdf4', iconBg:'linear-gradient(135deg,#15803d,#16a34a)' },
   'forum-aishield': { icon:'🛡', color:'#fffbeb', iconBg:'linear-gradient(135deg,#d97706,#f59e0b)' },
   'forum-tanya':    { icon:'💡', color:'#faf5ff', iconBg:'linear-gradient(135deg,#7c3aed,#8b5cf6)' },
+  'forum-riset':    { icon:'🔬', color:'#eff6ff', iconBg:'linear-gradient(135deg,#0369a1,#0284c7)' },
+  'forum-karir':    { icon:'💼', color:'#fff7ed', iconBg:'linear-gradient(135deg,#c2410c,#ea580c)' },
 }
+
 const DEFAULT_ROOMS = [
-  { id:'forum-umum',     name:'Forum Umum',           desc:'Diskusi akademik umum & pengumuman kampus', online:12 },
-  { id:'forum-tugas',    name:'Forum Tugas & Proyek',  desc:'Kolaborasi tugas, capstone, dan proyek kelompok', online:8 },
-  { id:'forum-aishield', name:'Forum AI SHIELD',       desc:'Demo sistem moderasi AI secara langsung', online:5 },
-  { id:'forum-tanya',    name:'Tanya Jawab Akademik',  desc:'Pertanyaan kuliah, ujian, dan materi perkuliahan', online:3 },
+  { id:'forum-umum',     name:'Forum Umum',            desc:'Diskusi akademik umum & pengumuman kampus',         online:12 },
+  { id:'forum-tugas',    name:'Forum Tugas & Proyek',   desc:'Kolaborasi tugas, capstone, dan proyek kelompok',   online:8  },
+  { id:'forum-aishield', name:'Forum AI SHIELD',        desc:'Demo sistem moderasi AI secara langsung',           online:5  },
+  { id:'forum-tanya',    name:'Tanya Jawab Akademik',   desc:'Pertanyaan kuliah, ujian, dan materi perkuliahan',  online:3  },
+  { id:'forum-riset',    name:'Forum Riset & Inovasi',  desc:'Diskusi penelitian, jurnal, dan inovasi teknologi', online:2  },
+  { id:'forum-karir',    name:'Forum Karir & Magang',   desc:'Info lowongan, tips karir, dan peluang magang',     online:4  },
 ]
 
-export default function RoomList({ username, onJoinRoom, onAdmin, onLogout }) {
+export default function RoomList({ username, onJoinRoom, onLogout }) {
   const [rooms, setRooms] = useState(DEFAULT_ROOMS)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    getRooms().then(r => { if (r.data?.length) setRooms(r.data) }).catch(() => {})
+    getRooms()
+      .then(r => {
+        if (r.data?.length) setRooms(r.data)
+        setLoading(false)
+      })
+      .catch(() => { setLoading(false) })
   }, [])
 
   const totalOnline = rooms.reduce((a, r) => a + (r.online || 0), 0)
@@ -36,8 +46,7 @@ export default function RoomList({ username, onJoinRoom, onAdmin, onLogout }) {
             <div className="user-pill-avatar">{username.slice(0,2).toUpperCase()}</div>
             <span className="user-pill-name">{username}</span>
           </div>
-          <button className="btn-sm accent" onClick={onAdmin}>⚙ Admin</button>
-          <button className="btn-sm" onClick={onLogout}>Keluar</button>
+          <button className="btn-sm" onClick={onLogout} title="Keluar dari sesi">Keluar</button>
         </div>
       </div>
 
@@ -75,6 +84,10 @@ export default function RoomList({ username, onJoinRoom, onAdmin, onLogout }) {
                 className="room-card"
                 style={{ animationDelay: `${i * 60}ms` }}
                 onClick={() => onJoinRoom({ ...room, ...meta })}
+                role="button"
+                tabIndex={0}
+                onKeyDown={e => e.key === 'Enter' && onJoinRoom({ ...room, ...meta })}
+                aria-label={`Masuk ke ${room.name}`}
               >
                 <div className="room-icon-wrap" style={{ background: meta.iconBg }}>
                   {meta.icon}
@@ -98,4 +111,3 @@ export default function RoomList({ username, onJoinRoom, onAdmin, onLogout }) {
     </div>
   )
 }
-

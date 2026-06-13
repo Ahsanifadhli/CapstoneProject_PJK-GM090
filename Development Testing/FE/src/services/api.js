@@ -13,3 +13,5 @@ export const resetAll       = ()        => api.delete('/api/admin/reset')
 
 export const createWebSocket = (roomId, username) =>
   new WebSocket(`${WS_URL}/ws/${roomId}/${encodeURIComponent(username)}`)
+
+export const deleteViolation = (id) => api.delete(`/api/admin/violations/${id}`)

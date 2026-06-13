@@ -1,73 +1,176 @@
-import React from "react"
-import { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { getMessages, createWebSocket } from '../services/api'
 import ChatBubble from '../components/ChatBubble'
 import ChatInput  from '../components/ChatInput'
 
-export default function ChatRoom({ username, room, onBack, onAdmin }) {
+export default function ChatRoom({ username, room, onBack }) {
   const [messages, setMessages] = useState([])
   const [wsReady,  setWsReady]  = useState(false)
   const [beError,  setBeError]  = useState(false)
-  const wsRef     = useRef(null)
-  const bottomRef = useRef(null)
+  const wsRef       = useRef(null)
+  const bottomRef   = useRef(null)
+  const timeoutRef  = useRef(null)
+  const mountedRef  = useRef(true)   // Mencegah setState setelah unmount
 
-  useEffect(() => {
+  const fetchMessages = useCallback(() => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
+
     getMessages(room.id)
       .then(r => {
+        if (!mountedRef.current) return
         setMessages(r.data.map(m => ({
           id: m.id, type: 'message', username: m.username,
           text: m.text, timestamp: m.created_at, self: m.username === username,
         })))
         setBeError(false)
       })
-      .catch(() => setBeError(true))
+      .catch(() => {
+        if (!mountedRef.current) return
+        // Retry sekali setelah 2 detik
+        timeoutRef.current = setTimeout(() => {
+          getMessages(room.id)
+            .then(r => {
+              if (!mountedRef.current) return
+              setMessages(r.data.map(m => ({
+                id: m.id, type: 'message', username: m.username,
+                text: m.text, timestamp: m.created_at, self: m.username === username,
+              })))
+              setBeError(false)
+            })
+            .catch(() => { if (mountedRef.current) setBeError(true) })
+        }, 2000)
+      })
+  }, [room.id, username])
+
+  useEffect(() => {
+    mountedRef.current = true
+    fetchMessages()
 
     const ws = createWebSocket(room.id, username)
     wsRef.current = ws
-    ws.onopen    = () => { setWsReady(true); setBeError(false) }
-    ws.onerror   = () => setBeError(true)
-    ws.onclose   = () => setWsReady(false)
-    ws.onmessage = e => {
-      const d = JSON.parse(e.data)
-      if (d.type === 'message')
-        setMessages(p => [...p, { id:d.id, type:'message', username:d.username, text:d.text, timestamp:d.timestamp, self:d.username===username }])
-      if (d.type === 'moderation' || d.type === 'system')
-        setMessages(p => [...p, { id:Date.now(), type:d.type, text:d.text }])
-    }
-    return () => ws.close()
-  }, [room.id, username])
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior:'smooth' }) }, [messages])
+    ws.onopen    = () => { if (mountedRef.current) { setWsReady(true); setBeError(false) } }
+    ws.onerror   = () => { if (mountedRef.current) setBeError(true) }
+    ws.onclose   = () => { if (mountedRef.current) setWsReady(false) }
+    ws.onmessage = e => {
+      if (!mountedRef.current) return
+      try {
+        const d = JSON.parse(e.data)
+        if (d.type === 'message')
+          setMessages(p => [...p, {
+            id: d.id ?? Date.now(),
+            type: 'message',
+            username: d.username,
+            text: d.text,
+            timestamp: d.timestamp,
+            self: d.username === username,
+          }])
+        if (d.type === 'moderation' || d.type === 'system')
+          setMessages(p => [...p, { id: Date.now() + Math.random(), type: d.type, text: d.text }])
+      } catch {
+        // JSON parse error — abaikan frame tidak valid
+      }
+    }
+
+    return () => {
+      mountedRef.current = false
+      if (timeoutRef.current) clearTimeout(timeoutRef.current)
+      // Hanya tutup jika belum CLOSED (readyState 3)
+      if (ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
+        ws.close()
+      }
+    }
+  }, [room.id, username, fetchMessages])
+
+  // Auto-scroll ke bawah saat ada pesan baru
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
 
   const send = text => {
     if (wsRef.current?.readyState === WebSocket.OPEN)
-      wsRef.current.send(JSON.stringify({ type:'message', text }))
+      wsRef.current.send(JSON.stringify({ type: 'message', text }))
   }
 
-  const sdot  = beError ? 'err' : wsReady ? 'ok' : 'wait'
-  const stext = beError ? '⚠ Backend tidak terhubung — jalankan server BE' : wsReady ? `Terhubung sebagai ${username}` : 'Menghubungkan...'
+  const handleRetry = () => {
+    setBeError(false)
+    fetchMessages()
+    // Coba buat ulang WebSocket jika sudah tertutup
+    const ws = wsRef.current
+    if (!ws || ws.readyState === WebSocket.CLOSED) {
+      const newWs = createWebSocket(room.id, username)
+      wsRef.current = newWs
+      newWs.onopen    = () => { if (mountedRef.current) { setWsReady(true); setBeError(false) } }
+      newWs.onerror   = () => { if (mountedRef.current) setBeError(true) }
+      newWs.onclose   = () => { if (mountedRef.current) setWsReady(false) }
+      newWs.onmessage = ws.onmessage
+    }
+  }
 
   return (
     <div className="chat-layout">
       <div className="chat-topbar">
-        <button className="back-btn" onClick={onBack} title="Kembali">‹</button>
+        <button className="back-btn" onClick={onBack} title="Kembali ke daftar room">‹</button>
         <div className="room-chip" style={{ background: room.iconBg || 'linear-gradient(135deg,#1d4ed8,#4338ca)' }}>
           {room.icon || '💬'}
         </div>
+
+        {/* Room info: name + desc */}
         <div className="topbar-info">
           <div className="topbar-name">{room.name}</div>
-          <div className="topbar-status">
-            <span className={`sdot ${sdot}`} />
-            <span className={`stext ${sdot}`}>{stext}</span>
-          </div>
+          {room.desc && (
+            <div style={{ fontSize:11, color:'var(--text-4)', marginTop:1, lineHeight:1.3 }}>
+              {room.desc}
+            </div>
+          )}
         </div>
-        <button className="btn-sm accent" onClick={onAdmin}>⚙ Admin</button>
+
+        {/* AI moderation status badge */}
+        {beError ? (
+          <div style={{
+            display:'flex', alignItems:'center', gap:6, padding:'5px 12px', borderRadius:99,
+            background:'var(--red-bg)', border:'1px solid var(--red-border)',
+            fontSize:11, fontWeight:600, color:'var(--red)', flexShrink:0, cursor:'pointer',
+            transition:'all .18s',
+          }}
+            onClick={handleRetry}
+            title="Klik untuk coba sambung ulang"
+          >
+            <span className="sdot err" />
+            Tidak Terhubung · Coba Lagi
+          </div>
+        ) : wsReady ? (
+          <div style={{
+            display:'flex', alignItems:'center', gap:6,
+            padding:'5px 12px', borderRadius:99,
+            background:'var(--green-bg)', border:'1px solid #bbf7d0',
+            fontSize:11, fontWeight:600, color:'var(--green)', flexShrink:0,
+          }}>
+            <span className="online-dot" style={{ width:7, height:7 }} />
+            🛡 AI Moderasi Aktif
+          </div>
+        ) : (
+          <div style={{
+            display:'flex', alignItems:'center', gap:6,
+            padding:'5px 12px', borderRadius:99,
+            background:'var(--gold-bg)', border:'1px solid var(--gold-border)',
+            fontSize:11, fontWeight:600, color:'var(--gold-dk)', flexShrink:0,
+          }}>
+            <span className="sdot wait" />
+            Menghubungkan...
+          </div>
+        )}
       </div>
 
       {beError && (
         <div className="error-bar">
           <span>⚠</span>
-          <span>Backend belum berjalan. Masuk ke folder <code>BE/</code> lalu jalankan: <code>uvicorn main:app --reload --port 8000</code></span>
+          <span>Tidak dapat terhubung ke server. Pastikan server sudah berjalan, lalu{' '}
+            <button
+              style={{ background:'none', border:'none', color:'inherit', textDecoration:'underline', cursor:'pointer', padding:0, font:'inherit' }}
+              onClick={handleRetry}
+            >coba lagi</button>.
+          </span>
         </div>
       )}
 
@@ -85,4 +188,3 @@ export default function ChatRoom({ username, room, onBack, onAdmin }) {
     </div>
   )
 }
-

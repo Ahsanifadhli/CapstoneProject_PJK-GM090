@@ -1,3 +1,8 @@
 fastapi==0.111.0
 uvicorn[standard]==0.29.0
 python-dotenv==1.0.1
+pydantic>=2.0.0
+# Diperlukan saat inference.py dari AI Engineer digunakan.
+# Komentari baris berikut jika model belum tersedia:
+torch>=2.0.0
+transformers>=4.35.0

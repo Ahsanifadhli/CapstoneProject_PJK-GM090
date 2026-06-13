@@ -1,33 +1,46 @@
-# Python
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment
+.env
+.env.*
+.env.local
+!.env.example
+
+# Dependencies
+node_modules/
 venv/
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
+.venv/
 *.egg-info/
 *.egg
 .Python
-*.db
-*.sqlite3
 
-# Node
-node_modules/
+# Build output
 dist/
+build/
 .vite/
 *.local
 
-# Env
-.env
-.env.*
-!.env.example
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
 
 # Backend model (large files)
 backend/model/
 Development\ Testing/AI/model/
 
-# OS
+# OS files
 .DS_Store
 Thumbs.db
+
+# Temporary
+*.tmp
+~$*
 
 # IDE
 .vscode/

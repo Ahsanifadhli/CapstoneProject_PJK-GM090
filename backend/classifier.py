@@ -10,6 +10,7 @@ KATA_TIDAK_PANTAS = [
     "jancok", "dancok", "kampret", "tai", "tahi", "puki", "kimak",
     "anjir", "brengsek", "ngentot", "ngewe", "pelacur", "jablay",
     "sundal", "kepala batu", "monyet", "celeng", "kurang ajar",
+    "goblog", "sinting", "edan", "gila", "dasar",
 ]
 
 
@@ -20,6 +21,9 @@ def predict(text: str) -> dict:
     Returns:
         dict: {"label": str, "confidence": float}
     """
+    if not text or not text.strip():
+        return {"label": "PANTAS", "confidence": 0.99}
+
     text_lower = text.lower()
 
     for kata in KATA_TIDAK_PANTAS:
@@ -36,12 +40,13 @@ if __name__ == "__main__":
         "Diskusi ini sangat menarik dan informatif.",
         "Dasar bodoh, tidak tahu apa-apa.",
         "Terima kasih atas penjelasannya yang sangat jelas.",
+        "",
     ]
 
     print("=== Test Classifier ===\n")
     for text in test_cases:
         result = predict(text)
-        print(f"Input    : {text}")
+        print(f"Input    : {repr(text)}")
         print(f"Label    : {result['label']}")
         print(f"Confidence: {result['confidence']}")
         print("-" * 50)
