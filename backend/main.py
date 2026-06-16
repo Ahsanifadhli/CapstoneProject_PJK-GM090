@@ -3,6 +3,8 @@ import os
 import sys
 import json
 import sqlite3
+import hashlib
+import secrets
 from datetime import datetime
 from typing import Dict, Optional
 
@@ -10,10 +12,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from passlib.context import CryptContext
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 load_dotenv()
 
-THRESHOLD   = float(os.getenv("THRESHOLD", "0.75"))
 CORS_ORIGIN = os.getenv("CORS_ORIGIN", "http://localhost:5173")
 ADMIN_PASS  = os.getenv("ADMIN_PASSWORD", "admin123")
 
@@ -49,6 +53,24 @@ predict = load_classifier()
 def sanitize(text: str) -> str:
     """Strip whitespace; di masa depan bisa tambah HTML-escape dll."""
     return text.strip() if text else ""
+
+def classify_with_context(text: str) -> dict:
+    """
+    Wrapper tipis untuk predict() dari classifier.py v3 (Ammie).
+    classifier.py sudah menangani logika 3-label secara internal:
+      - PANTAS       : teks aman
+      - MERAGUKAN    : plesetan, kata kasar dalam konteks pujian, bahasa daerah tidak dikenal
+      - TIDAK PANTAS : ujaran kebencian jelas
+    BE cukup percaya hasil dari classifier.py tanpa logika threshold tambahan.
+    """
+    result = predict(text)
+    return {
+        "label":             result["label"],        # "PANTAS" | "MERAGUKAN" | "TIDAK PANTAS"
+        "confidence":        result["confidence"],   # float 0.0-1.0
+        "prob_pantas":       result.get("prob_pantas", 0.0),
+        "prob_meragukan":    result.get("prob_meragukan", 0.0),
+        "prob_tidak_pantas": result.get("prob_tidak_pantas", 0.0),
+    }
 
 app = FastAPI(title="AI SHIELD API", version="1.0.0")
 
@@ -88,26 +110,43 @@ def init_db():
     conn = get_db()
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            room_id TEXT NOT NULL, username TEXT NOT NULL,
-            text TEXT NOT NULL, confidence REAL NOT NULL, created_at TEXT NOT NULL
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_id    TEXT    NOT NULL,
+            username   TEXT    NOT NULL,
+            text       TEXT    NOT NULL,
+            confidence REAL    NOT NULL,
+            created_at TEXT    NOT NULL
         );
         CREATE TABLE IF NOT EXISTS violations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            room_id TEXT NOT NULL, username TEXT NOT NULL,
-            text TEXT NOT NULL, confidence REAL NOT NULL,
-            reviewed INTEGER DEFAULT 0,
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_id    TEXT    NOT NULL,
+            username   TEXT    NOT NULL,
+            text       TEXT    NOT NULL,
+            confidence REAL    NOT NULL,
+            label      TEXT    DEFAULT 'TIDAK PANTAS',
+            reviewed   INTEGER DEFAULT 0,
             can_review INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL
+            created_at TEXT    NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS users (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            username   TEXT    NOT NULL UNIQUE,
+            email      TEXT    NOT NULL UNIQUE,
+            password   TEXT    NOT NULL,
+            created_at TEXT    NOT NULL
         );
     """)
     conn.commit()
-    # Migrasi: tambah can_review ke tabel lama jika belum ada
-    try:
-        conn.execute("ALTER TABLE violations ADD COLUMN can_review INTEGER DEFAULT 0")
-        conn.commit()
-    except Exception:
-        pass  # kolom sudah ada
+    # Migrasi untuk database lama yang belum punya kolom baru
+    for migration in [
+        "ALTER TABLE violations ADD COLUMN can_review INTEGER DEFAULT 0",
+        "ALTER TABLE violations ADD COLUMN label TEXT DEFAULT 'TIDAK PANTAS'",
+    ]:
+        try:
+            conn.execute(migration)
+            conn.commit()
+        except Exception:
+            pass  # kolom sudah ada
     conn.close()
     print("[AI SHIELD] Database initialized.")
 
@@ -182,33 +221,131 @@ class MessageRequest(BaseModel):
     username: str
     text: str
 
+class RegisterRequest(BaseModel):
+    username: str
+    email:    str
+    password: str
+
+class LoginRequest(BaseModel):
+    email:    str
+    password: str
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+@app.post("/api/auth/register")
+def register(req: RegisterRequest):
+    # Validasi input
+    if not req.username or len(req.username) < 3:
+        raise HTTPException(status_code=400, detail="Username minimal 3 karakter")
+    if not req.email or "@" not in req.email:
+        raise HTTPException(status_code=400, detail="Format email tidak valid")
+    if not req.password or len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password minimal 6 karakter")
+
+    hashed = pwd_context.hash(req.password)
+    now    = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn   = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO users (username, email, password, created_at) VALUES (?,?,?,?)",
+            (req.username.strip(), req.email.strip().lower(), hashed, now)
+        )
+        conn.commit()
+        conn.close()
+        return {"success": True, "message": "Registrasi berhasil", "username": req.username}
+    except sqlite3.IntegrityError as e:
+        conn.close()
+        if "username" in str(e):
+            raise HTTPException(status_code=409, detail="Username sudah digunakan")
+        if "email" in str(e):
+            raise HTTPException(status_code=409, detail="Email sudah terdaftar")
+        raise HTTPException(status_code=409, detail="Data sudah terdaftar")
+
+@app.post("/api/auth/login")
+def login(req: LoginRequest):
+    if not req.email or not req.password:
+        raise HTTPException(status_code=400, detail="Email dan password wajib diisi")
+
+    conn = get_db()
+    row  = conn.execute(
+        "SELECT * FROM users WHERE email=?",
+        (req.email.strip().lower(),)
+    ).fetchone()
+    conn.close()
+
+    if not row or not pwd_context.verify(req.password, row["password"]):
+        raise HTTPException(status_code=401, detail="Email atau password salah")
+
+    return {
+        "success":  True,
+        "username": row["username"],
+        "email":    row["email"],
+        "user_id":  row["id"],
+    }
+
+@app.get("/api/auth/check-username/{username}")
+def check_username(username: str):
+    conn = get_db()
+    row  = conn.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+    conn.close()
+    return {"available": row is None}
+
 @app.post("/api/messages")
 def post_message(req: MessageRequest):
     text = sanitize(req.text)
     if not text:
         raise HTTPException(status_code=400, detail="Pesan tidak boleh kosong")
-    result = predict(text)
-    label, confidence = result["label"], result["confidence"]
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = get_db()
-    if label == "PANTAS" and confidence >= THRESHOLD:
+    result     = classify_with_context(text)
+    label      = result["label"]
+    confidence = result["confidence"]
+    now        = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn       = get_db()
+
+    if label == "PANTAS":
         conn.execute(
             "INSERT INTO messages (room_id,username,text,confidence,created_at) VALUES (?,?,?,?,?)",
             (req.room_id, req.username, text, confidence, now)
         )
         conn.commit(); conn.close()
-        return {"status": "PANTAS", "confidence": round(confidence, 3)}
-    else:
-        can_review = int(confidence < THRESHOLD)
+        return {
+            "status":            "PANTAS",
+            "confidence":        round(confidence, 3),
+            "prob_pantas":       round(result["prob_pantas"], 3),
+            "prob_meragukan":    round(result["prob_meragukan"], 3),
+            "prob_tidak_pantas": round(result["prob_tidak_pantas"], 3),
+        }
+
+    elif label == "MERAGUKAN":
         conn.execute(
-            "INSERT INTO violations (room_id,username,text,confidence,can_review,created_at) VALUES (?,?,?,?,?,?)",
-            (req.room_id, req.username, text, confidence, can_review, now)
+            "INSERT INTO violations (room_id,username,text,confidence,label,can_review,created_at) VALUES (?,?,?,?,?,?,?)",
+            (req.room_id, req.username, text, confidence, "MERAGUKAN", 1, now)
         )
         conn.commit(); conn.close()
         return {
-            "status": "TIDAK PANTAS",
-            "confidence": round(confidence, 3),
-            "notifikasi": NOTIFIKASI_EDUKATIF,
+            "status":            "MERAGUKAN",
+            "confidence":        round(confidence, 3),
+            "prob_pantas":       round(result["prob_pantas"], 3),
+            "prob_meragukan":    round(result["prob_meragukan"], 3),
+            "prob_tidak_pantas": round(result["prob_tidak_pantas"], 3),
+            "notifikasi": (
+                "Pesanmu perlu ditinjau lebih lanjut. Sistem mendeteksi kemungkinan "
+                "bahasa yang tidak sesuai, namun belum dapat memastikannya. "
+                "Admin akan memeriksa pesanmu."
+            ),
+        }
+
+    else:  # TIDAK PANTAS
+        conn.execute(
+            "INSERT INTO violations (room_id,username,text,confidence,label,can_review,created_at) VALUES (?,?,?,?,?,?,?)",
+            (req.room_id, req.username, text, confidence, "TIDAK PANTAS", 0, now)
+        )
+        conn.commit(); conn.close()
+        return {
+            "status":            "TIDAK PANTAS",
+            "confidence":        round(confidence, 3),
+            "prob_pantas":       round(result["prob_pantas"], 3),
+            "prob_meragukan":    round(result["prob_meragukan"], 3),
+            "prob_tidak_pantas": round(result["prob_tidak_pantas"], 3),
+            "notifikasi":        NOTIFIKASI_EDUKATIF,
         }
 
 # ── Admin ──────────────────────────────────────────────────────────────────────
@@ -240,22 +377,28 @@ def verify_admin(body: dict = Body(...)):
 
 @app.get("/api/admin/stats")
 def get_stats():
-    conn = get_db()
-    p = conn.execute("SELECT COUNT(*) as c FROM messages").fetchone()["c"]
-    v = conn.execute("SELECT COUNT(*) as c FROM violations").fetchone()["c"]
+    conn  = get_db()
+    p     = conn.execute("SELECT COUNT(*) as c FROM messages").fetchone()["c"]
+    v     = conn.execute("SELECT COUNT(*) as c FROM violations WHERE label='TIDAK PANTAS'").fetchone()["c"]
+    m     = conn.execute("SELECT COUNT(*) as c FROM violations WHERE label='MERAGUKAN'").fetchone()["c"]
     per_room = []
     for r in ROOMS:
-        pm = conn.execute("SELECT COUNT(*) as c FROM messages WHERE room_id=?", (r["id"],)).fetchone()["c"]
-        pv = conn.execute("SELECT COUNT(*) as c FROM violations WHERE room_id=?", (r["id"],)).fetchone()["c"]
-        per_room.append({"room_id": r["id"], "name": r["name"], "pantas": pm, "tidak_pantas": pv})
+        pm  = conn.execute("SELECT COUNT(*) as c FROM messages WHERE room_id=?", (r["id"],)).fetchone()["c"]
+        pv  = conn.execute("SELECT COUNT(*) as c FROM violations WHERE room_id=? AND label='TIDAK PANTAS'", (r["id"],)).fetchone()["c"]
+        pmr = conn.execute("SELECT COUNT(*) as c FROM violations WHERE room_id=? AND label='MERAGUKAN'", (r["id"],)).fetchone()["c"]
+        per_room.append({
+            "room_id": r["id"], "name": r["name"],
+            "pantas": pm, "tidak_pantas": pv, "meragukan": pmr
+        })
     conn.close()
-    total = p + v
+    total = p + v + m
     return {
-        "total_messages": total,
-        "pantas": p,
-        "tidak_pantas": v,
-        "moderation_rate": round(v / total * 100, 1) if total > 0 else 0,
-        "per_room": per_room,
+        "total_messages":  total,
+        "pantas":          p,
+        "tidak_pantas":    v,
+        "meragukan":       m,
+        "moderation_rate": round((v + m) / total * 100, 1) if total > 0 else 0,
+        "per_room":        per_room,
     }
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────
@@ -286,12 +429,13 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, username: str):
             if not text:
                 continue
 
-            result = predict(text)
-            label, confidence = result["label"], result["confidence"]
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            conn = get_db()
+            result     = classify_with_context(text)
+            label      = result["label"]
+            confidence = result["confidence"]
+            now        = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            conn       = get_db()
 
-            if label == "PANTAS" and confidence >= THRESHOLD:
+            if label == "PANTAS":
                 conn.execute(
                     "INSERT INTO messages (room_id,username,text,confidence,created_at) VALUES (?,?,?,?,?)",
                     (room_id, username, text, confidence, now)
@@ -299,24 +443,49 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, username: str):
                 msg_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                 conn.commit(); conn.close()
                 await manager.broadcast(room_id, {
-                    "type": "message",
-                    "id": msg_id,
-                    "username": username,
-                    "text": text,
+                    "type":      "message",
+                    "id":        msg_id,
+                    "username":  username,
+                    "text":      text,
                     "timestamp": now,
                 })
-            else:
-                can_review = confidence < THRESHOLD and label == "TIDAK PANTAS"
+
+            elif label == "MERAGUKAN":
                 conn.execute(
-                    "INSERT INTO violations (room_id,username,text,confidence,can_review,created_at) VALUES (?,?,?,?,?,?)",
-                    (room_id, username, text, confidence, int(can_review), now)
+                    "INSERT INTO violations (room_id,username,text,confidence,label,can_review,created_at) VALUES (?,?,?,?,?,?,?)",
+                    (room_id, username, text, confidence, "MERAGUKAN", 1, now)
                 )
                 conn.commit(); conn.close()
                 await manager.send_to(room_id, username, {
-                    "type": "moderation",
-                    "text": NOTIFIKASI_EDUKATIF,
-                    "can_review": can_review,
-                    "confidence": round(confidence, 3),
+                    "type":              "moderation",
+                    "status":            "MERAGUKAN",
+                    "text": (
+                        "Pesanmu perlu ditinjau lebih lanjut. Sistem mendeteksi kemungkinan "
+                        "bahasa yang tidak sesuai, namun belum dapat memastikannya. "
+                        "Admin akan memeriksa pesanmu."
+                    ),
+                    "can_review":        True,
+                    "confidence":        round(confidence, 3),
+                    "prob_pantas":       round(result["prob_pantas"], 3),
+                    "prob_meragukan":    round(result["prob_meragukan"], 3),
+                    "prob_tidak_pantas": round(result["prob_tidak_pantas"], 3),
+                })
+
+            else:  # TIDAK PANTAS
+                conn.execute(
+                    "INSERT INTO violations (room_id,username,text,confidence,label,can_review,created_at) VALUES (?,?,?,?,?,?,?)",
+                    (room_id, username, text, confidence, "TIDAK PANTAS", 0, now)
+                )
+                conn.commit(); conn.close()
+                await manager.send_to(room_id, username, {
+                    "type":              "moderation",
+                    "status":            "TIDAK PANTAS",
+                    "text":              NOTIFIKASI_EDUKATIF,
+                    "can_review":        False,
+                    "confidence":        round(confidence, 3),
+                    "prob_pantas":       round(result["prob_pantas"], 3),
+                    "prob_meragukan":    round(result["prob_meragukan"], 3),
+                    "prob_tidak_pantas": round(result["prob_tidak_pantas"], 3),
                 })
     except WebSocketDisconnect:
         manager.disconnect(room_id, username)
