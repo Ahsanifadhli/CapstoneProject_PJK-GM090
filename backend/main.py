@@ -307,11 +307,13 @@ def post_message(req: MessageRequest):
         )
         conn.commit(); conn.close()
         return {
-            "status":            "PANTAS",
-            "confidence":        round(confidence, 3),
-            "prob_pantas":       round(result["prob_pantas"], 3),
-            "prob_meragukan":    round(result["prob_meragukan"], 3),
-            "prob_tidak_pantas": round(result["prob_tidak_pantas"], 3),
+            "status":     "PANTAS",
+            "confidence": round(confidence, 3),
+            "probabilities": {
+                "pantas":       round(result["prob_pantas"], 3),
+                "meragukan":    round(result["prob_meragukan"], 3),
+                "tidak_pantas": round(result["prob_tidak_pantas"], 3),
+            },
         }
 
     elif label == "MERAGUKAN":
@@ -321,11 +323,13 @@ def post_message(req: MessageRequest):
         )
         conn.commit(); conn.close()
         return {
-            "status":            "MERAGUKAN",
-            "confidence":        round(confidence, 3),
-            "prob_pantas":       round(result["prob_pantas"], 3),
-            "prob_meragukan":    round(result["prob_meragukan"], 3),
-            "prob_tidak_pantas": round(result["prob_tidak_pantas"], 3),
+            "status":     "MERAGUKAN",
+            "confidence": round(confidence, 3),
+            "probabilities": {
+                "pantas":       round(result["prob_pantas"], 3),
+                "meragukan":    round(result["prob_meragukan"], 3),
+                "tidak_pantas": round(result["prob_tidak_pantas"], 3),
+            },
             "notifikasi": (
                 "Pesanmu perlu ditinjau lebih lanjut. Sistem mendeteksi kemungkinan "
                 "bahasa yang tidak sesuai, namun belum dapat memastikannya. "
@@ -340,12 +344,14 @@ def post_message(req: MessageRequest):
         )
         conn.commit(); conn.close()
         return {
-            "status":            "TIDAK PANTAS",
-            "confidence":        round(confidence, 3),
-            "prob_pantas":       round(result["prob_pantas"], 3),
-            "prob_meragukan":    round(result["prob_meragukan"], 3),
-            "prob_tidak_pantas": round(result["prob_tidak_pantas"], 3),
-            "notifikasi":        NOTIFIKASI_EDUKATIF,
+            "status":     "TIDAK PANTAS",
+            "confidence": round(confidence, 3),
+            "probabilities": {
+                "pantas":       round(result["prob_pantas"], 3),
+                "meragukan":    round(result["prob_meragukan"], 3),
+                "tidak_pantas": round(result["prob_tidak_pantas"], 3),
+            },
+            "notifikasi": NOTIFIKASI_EDUKATIF,
         }
 
 # ── Admin ──────────────────────────────────────────────────────────────────────
@@ -448,6 +454,11 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, username: str):
                     "username":  username,
                     "text":      text,
                     "timestamp": now,
+                    "probabilities": {
+                        "pantas":       round(result["prob_pantas"], 3),
+                        "meragukan":    round(result["prob_meragukan"], 3),
+                        "tidak_pantas": round(result["prob_tidak_pantas"], 3),
+                    },
                 })
 
             elif label == "MERAGUKAN":
@@ -457,18 +468,20 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, username: str):
                 )
                 conn.commit(); conn.close()
                 await manager.send_to(room_id, username, {
-                    "type":              "moderation",
-                    "status":            "MERAGUKAN",
+                    "type":       "moderation",
+                    "status":     "MERAGUKAN",
                     "text": (
                         "Pesanmu perlu ditinjau lebih lanjut. Sistem mendeteksi kemungkinan "
                         "bahasa yang tidak sesuai, namun belum dapat memastikannya. "
                         "Admin akan memeriksa pesanmu."
                     ),
-                    "can_review":        True,
-                    "confidence":        round(confidence, 3),
-                    "prob_pantas":       round(result["prob_pantas"], 3),
-                    "prob_meragukan":    round(result["prob_meragukan"], 3),
-                    "prob_tidak_pantas": round(result["prob_tidak_pantas"], 3),
+                    "can_review": True,
+                    "confidence": round(confidence, 3),
+                    "probabilities": {
+                        "pantas":       round(result["prob_pantas"], 3),
+                        "meragukan":    round(result["prob_meragukan"], 3),
+                        "tidak_pantas": round(result["prob_tidak_pantas"], 3),
+                    },
                 })
 
             else:  # TIDAK PANTAS
@@ -478,14 +491,16 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, username: str):
                 )
                 conn.commit(); conn.close()
                 await manager.send_to(room_id, username, {
-                    "type":              "moderation",
-                    "status":            "TIDAK PANTAS",
-                    "text":              NOTIFIKASI_EDUKATIF,
-                    "can_review":        False,
-                    "confidence":        round(confidence, 3),
-                    "prob_pantas":       round(result["prob_pantas"], 3),
-                    "prob_meragukan":    round(result["prob_meragukan"], 3),
-                    "prob_tidak_pantas": round(result["prob_tidak_pantas"], 3),
+                    "type":       "moderation",
+                    "status":     "TIDAK PANTAS",
+                    "text":       NOTIFIKASI_EDUKATIF,
+                    "can_review": False,
+                    "confidence": round(confidence, 3),
+                    "probabilities": {
+                        "pantas":       round(result["prob_pantas"], 3),
+                        "meragukan":    round(result["prob_meragukan"], 3),
+                        "tidak_pantas": round(result["prob_tidak_pantas"], 3),
+                    },
                 })
     except WebSocketDisconnect:
         manager.disconnect(room_id, username)
