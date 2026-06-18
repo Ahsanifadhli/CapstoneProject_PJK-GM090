@@ -1,67 +1,131 @@
 import React, { useState, useEffect } from "react"
-import Login          from "./pages/Login"
+import SplashScreen   from "./pages/SplashScreen"
+import AuthPage       from "./pages/AuthPage"
 import AdminLogin     from "./pages/AdminLogin"
 import RoomList       from "./pages/RoomList"
 import ChatRoom       from "./pages/ChatRoom"
 import AdminDashboard from "./pages/AdminDashboard"
-import SplashScreen   from "./pages/SplashScreen"
+import ProfilePage    from "./pages/ProfilePage"
 import "./index.css"
 
 export default function App() {
-  const [splash, setSplash]     = useState(true)
-  const [page, setPage]         = useState("login")
-  const [username, setUsername] = useState("")
-  const [room, setRoom]         = useState(null)
+  const [splash, setSplash] = useState(true)
+
+  const [user, setUser] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('aishield_user')
+      return saved ? JSON.parse(saved) : null
+    } catch { return null }
+  })
+
+  const [page, setPage] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('aishield_user')
+      return saved ? 'rooms' : 'auth'
+    } catch { return 'auth' }
+  })
+
+  const [room, setRoom] = useState(null)
+
+  // displayName terpisah agar bisa diupdate dari ProfilePage tanpa reload
+  const [displayName, setDisplayName] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('aishield_user')
+      return saved ? JSON.parse(saved)?.username || '' : ''
+    } catch { return '' }
+  })
+
+  const [userEmail, setUserEmail] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('aishield_user')
+      return saved ? JSON.parse(saved)?.email || '' : ''
+    } catch { return '' }
+  })
 
   useEffect(() => {
-    // Splash hilang setelah 2800ms
     const t = setTimeout(() => setSplash(false), 2800)
     return () => clearTimeout(t)
   }, [])
 
   if (splash) return <SplashScreen />
 
-  if (page === "login")
+  const handleLogin = (username, email) => {
+    const userData = { username, email }
+    sessionStorage.setItem('aishield_user', JSON.stringify(userData))
+    setUser(userData)
+    setDisplayName(username)
+    setUserEmail(email)
+    setPage('rooms')
+  }
+
+  const handleLogout = () => {
+    sessionStorage.removeItem('aishield_user')
+    setUser(null)
+    setDisplayName('')
+    setUserEmail('')
+    setPage('auth')
+  }
+
+  // Dipanggil dari ProfilePage saat user simpan nama baru
+  const handleUpdateUsername = (newName) => {
+    const updated = { ...user, username: newName }
+    setUser(updated)
+    setDisplayName(newName)
+    sessionStorage.setItem('aishield_user', JSON.stringify(updated))
+  }
+
+  if (page === 'auth')
     return (
-      <Login
-        onLogin={n => { setUsername(n); setPage("rooms") }}
-        onAdminLogin={() => setPage("adminlogin")}
+      <AuthPage
+        onLogin={handleLogin}
+        onAdminLogin={() => setPage('adminlogin')}
       />
     )
 
-  if (page === "adminlogin")
+  if (page === 'adminlogin')
     return (
       <AdminLogin
-        onSuccess={() => setPage("admin")}
-        onBack={() => setPage("login")}
+        onSuccess={() => setPage('admin')}
+        onBack={() => setPage(user ? 'rooms' : 'auth')}
       />
     )
 
-  if (page === "rooms")
+  if (page === 'rooms')
     return (
       <RoomList
-        username={username}
-        onJoinRoom={r => { setRoom(r); setPage("chat") }}
-        onLogout={() => { setUsername(""); setPage("login") }}
+        username={displayName}
+        onJoinRoom={(r) => { setRoom(r); setPage('chat') }}
+        onLogout={handleLogout}
+        onProfile={() => setPage('profile')}
       />
     )
 
-  if (page === "chat")
+  if (page === 'chat')
     return (
       <ChatRoom
-        username={username}
+        username={displayName}
         room={room}
-        onBack={() => setPage("rooms")}
+        onBack={() => setPage('rooms')}
       />
     )
 
-  if (page === "admin")
+  if (page === 'admin')
     return (
       <AdminDashboard
-        onBack={() => setPage(username ? "rooms" : "login")}
+        onBack={() => setPage(user ? 'rooms' : 'auth')}
       />
     )
 
-  // Fallback
-  return <Login onLogin={n => { setUsername(n); setPage("rooms") }} onAdminLogin={() => setPage("adminlogin")} />
+  if (page === 'profile')
+    return (
+      <ProfilePage
+        username={displayName}
+        email={userEmail}
+        onBack={() => setPage('rooms')}
+        onLogout={handleLogout}
+        onUpdateUsername={handleUpdateUsername}
+      />
+    )
+
+  return <AuthPage onLogin={handleLogin} onAdminLogin={() => setPage('adminlogin')} />
 }

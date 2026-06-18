@@ -282,6 +282,25 @@ def login(req: LoginRequest):
         "user_id":  row["id"],
     }
 
+class ChangePasswordRequest(BaseModel):
+    email: str
+    old_password: str
+    new_password: str
+
+@app.patch("/api/auth/change-password")
+def change_password(req: ChangePasswordRequest):
+    if len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password baru minimal 6 karakter")
+    conn = get_db()
+    row  = conn.execute("SELECT * FROM users WHERE email=?", (req.email.strip().lower(),)).fetchone()
+    if not row or not pwd_context.verify(req.old_password, row["password"]):
+        conn.close()
+        raise HTTPException(status_code=401, detail="Password lama salah")
+    hashed = pwd_context.hash(req.new_password)
+    conn.execute("UPDATE users SET password=? WHERE email=?", (hashed, req.email.strip().lower()))
+    conn.commit(); conn.close()
+    return {"success": True, "message": "Password berhasil diubah"}
+
 @app.get("/api/auth/check-username/{username}")
 def check_username(username: str):
     conn = get_db()
@@ -367,6 +386,13 @@ def get_violations(room_id: Optional[str] = None):
     conn.close()
     return [dict(r) for r in rows]
 
+@app.delete("/api/admin/violations/{violation_id}")
+def delete_violation(violation_id: int):
+    conn = get_db()
+    conn.execute("DELETE FROM violations WHERE id = ?", (violation_id,))
+    conn.commit(); conn.close()
+    return {"success": True}
+
 @app.delete("/api/admin/reset")
 def reset_all():
     conn = get_db()
@@ -380,6 +406,102 @@ def verify_admin(body: dict = Body(...)):
     if body.get("password") == ADMIN_PASS:
         return {"success": True}
     return {"success": False}
+
+@app.get("/api/admin/users")
+def get_users():
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, username, email, created_at FROM users ORDER BY id DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+@app.delete("/api/admin/users/{user_id}")
+def delete_user(user_id: int):
+    conn = get_db()
+    row = conn.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="User tidak ditemukan")
+    conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+    conn.commit(); conn.close()
+    return {"success": True}
+
+
+class ReviewRequest(BaseModel):
+    decision: str  # "approve" | "reject"
+
+@app.patch("/api/admin/violations/{violation_id}/review")
+async def review_violation(violation_id: int, req: ReviewRequest):
+    if req.decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="decision harus 'approve' atau 'reject'")
+    
+    conn = get_db()
+    row  = conn.execute("SELECT * FROM violations WHERE id=?", (violation_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Pelanggaran tidak ditemukan")
+    
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    if req.decision == "approve":
+        # Pindahkan pesan dari violations ke messages agar tampil di chat
+        conn.execute(
+            "INSERT INTO messages (room_id,username,text,confidence,created_at) VALUES (?,?,?,?,?)",
+            (row["room_id"], row["username"], row["text"], row["confidence"], now)
+        )
+        msg_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("DELETE FROM violations WHERE id=?", (violation_id,))
+        conn.commit()
+        conn.close()
+        
+        # Kirim pesan ke semua user di room via WebSocket
+        await manager.broadcast(row["room_id"], {
+            "type":      "message",
+            "id":        msg_id,
+            "username":  row["username"],
+            "text":      row["text"],
+            "timestamp": now,
+        })
+        # Kirim notifikasi ke pengirim bahwa pesannya disetujui
+        await manager.send_to(row["room_id"], row["username"], {
+            "type":   "system",
+            "text":   "✅ Pesanmu telah ditinjau dan disetujui oleh admin. Pesan kini tampil di room.",
+        })
+    else:
+        # Tolak: tandai reviewed=1 dan label DITOLAK
+        conn.execute(
+            "UPDATE violations SET reviewed=1, label='DITOLAK' WHERE id=?",
+            (violation_id,)
+        )
+        conn.commit()
+        conn.close()
+        
+        # Kirim notifikasi penolakan ke pengirim via WebSocket
+        await manager.send_to(row["room_id"], row["username"], {
+            "type":   "moderation",
+            "status": "TIDAK PANTAS",
+            "text":   "Pesanmu telah ditinjau oleh admin dan dinyatakan tidak sesuai standar komunikasi akademik. Coba sampaikan kembali dengan pilihan kata yang lebih tepat.",
+        })
+    
+    return {"success": True, "decision": req.decision}
+
+
+@app.patch("/api/violations/{violation_id}/request-review")
+def request_review(violation_id: int):
+    """User meminta admin untuk me-review pesan MERAGUKAN mereka."""
+    conn = get_db()
+    row  = conn.execute("SELECT * FROM violations WHERE id=?", (violation_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Pelanggaran tidak ditemukan")
+    conn.execute(
+        "UPDATE violations SET can_review=1 WHERE id=?",
+        (violation_id,)
+    )
+    conn.commit(); conn.close()
+    return {"success": True, "message": "Permintaan review terkirim ke admin"}
+
 
 @app.get("/api/admin/stats")
 def get_stats():
@@ -406,6 +528,18 @@ def get_stats():
         "moderation_rate": round((v + m) / total * 100, 1) if total > 0 else 0,
         "per_room":        per_room,
     }
+
+@app.post("/api/flag")
+def flag_message(body: dict = Body(...)):
+    conn = get_db()
+    now  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "INSERT INTO violations (room_id,username,text,confidence,label,can_review,created_at) VALUES (?,?,?,?,?,?,?)",
+        (body.get("room_id",""), body.get("reporter",""),
+         f"[DILAPORKAN] {body.get('text','')}", 0.5, "DILAPORKAN", 1, now)
+    )
+    conn.commit(); conn.close()
+    return {"success": True}
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────
 @app.websocket("/ws/{room_id}/{username}")
@@ -466,10 +600,12 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, username: str):
                     "INSERT INTO violations (room_id,username,text,confidence,label,can_review,created_at) VALUES (?,?,?,?,?,?,?)",
                     (room_id, username, text, confidence, "MERAGUKAN", 1, now)
                 )
+                violation_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                 conn.commit(); conn.close()
                 await manager.send_to(room_id, username, {
-                    "type":       "moderation",
-                    "status":     "MERAGUKAN",
+                    "type":         "moderation",
+                    "status":       "MERAGUKAN",
+                    "violation_id": violation_id,
                     "text": (
                         "Pesanmu perlu ditinjau lebih lanjut. Sistem mendeteksi kemungkinan "
                         "bahasa yang tidak sesuai, namun belum dapat memastikannya. "

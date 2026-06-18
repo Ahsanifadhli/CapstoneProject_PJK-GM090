@@ -12,16 +12,23 @@ export default function ChatBubble({ message }) {
   if (message.type === 'system')
     return <div className="sys-msg">{message.text}</div>
 
-  if (message.type === 'moderation')
+  if (message.type === 'moderation') {
+    const isMeragukan = message.status === 'MERAGUKAN'
     return (
-      <div className="mod-toast">
-        <span className="mod-toast-icon">⚠️</span>
+      <div className={`mod-toast ${isMeragukan ? 'mod-toast-warn' : 'mod-toast-err'}`}>
+        <span className="mod-toast-icon">{isMeragukan ? '⚠️' : '🚫'}</span>
         <div className="mod-toast-body">
-          <strong>Pesan disembunyikan oleh AI Shield</strong><br />
-          {message.text}
+          <strong>{isMeragukan ? 'Pesan perlu ditinjau' : 'Pesan disembunyikan oleh AI SHIELD'}</strong>
+          <br />{message.text}
+          {isMeragukan && (
+            <div style={{ marginTop:6, fontSize:11, color:'var(--gold-dk)', fontWeight:500 }}>
+              Admin akan memeriksa pesanmu dalam waktu dekat.
+            </div>
+          )}
         </div>
       </div>
     )
+  }
 
   const [bg, fg] = getColor(message.username)
   const initials = (message.username||'?').slice(0,2).toUpperCase()

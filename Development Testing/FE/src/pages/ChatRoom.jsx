@@ -1,7 +1,62 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
-import { getMessages, createWebSocket } from '../services/api'
+import { getMessages, createWebSocket, requestReview } from '../services/api'
 import ChatBubble from '../components/ChatBubble'
 import ChatInput  from '../components/ChatInput'
+
+// ── Tombol Ajukan Review ke Admin ─────────────────────────────────────────────
+function ReviewButton({ violationId }) {
+  const [status, setStatus] = useState('idle') // idle | loading | sent | error
+
+  const handleClick = async () => {
+    if (status !== 'idle') return
+    setStatus('loading')
+    try {
+      if (violationId) {
+        await requestReview(violationId)
+      }
+      setStatus('sent')
+    } catch {
+      setStatus('error')
+    }
+  }
+
+  if (status === 'sent')
+    return (
+      <div style={{
+        marginTop: 6, padding: '6px 14px', borderRadius: 8,
+        background: 'var(--green-bg)', border: '1px solid #bbf7d0',
+        fontSize: 12, color: 'var(--green)', fontWeight: 600,
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+      }}>
+        ✅ Permintaan review terkirim ke admin
+      </div>
+    )
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={status === 'loading'}
+      style={{
+        marginTop: 6,
+        padding: '6px 14px',
+        borderRadius: 8,
+        border: '1px solid #d97706',
+        background: status === 'error' ? 'var(--red-bg)' : 'var(--gold-bg)',
+        color: status === 'error' ? 'var(--red)' : 'var(--gold-dk)',
+        fontSize: 12,
+        fontWeight: 600,
+        cursor: status === 'loading' ? 'not-allowed' : 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        opacity: status === 'loading' ? 0.7 : 1,
+        transition: 'all .18s',
+      }}
+    >
+      {status === 'loading' ? '⏳ Mengirim...' : status === 'error' ? '⚠ Gagal, coba lagi' : '📋 Ajukan Review ke Admin'}
+    </button>
+  )
+}
 
 export default function ChatRoom({ username, room, onBack }) {
   const [messages, setMessages] = useState([])
@@ -66,7 +121,14 @@ export default function ChatRoom({ username, room, onBack }) {
             self: d.username === username,
           }])
         if (d.type === 'moderation' || d.type === 'system')
-          setMessages(p => [...p, { id: Date.now() + Math.random(), type: d.type, text: d.text }])
+          setMessages(p => [...p, {
+            id: Date.now() + Math.random(),
+            type: d.type,
+            text: d.text,
+            status: d.status || null,       // MERAGUKAN | TIDAK PANTAS
+            violation_id: d.violation_id ?? null,
+            can_review: d.can_review ?? false,
+          }])
       } catch {
         // JSON parse error — abaikan frame tidak valid
       }
@@ -75,8 +137,15 @@ export default function ChatRoom({ username, room, onBack }) {
     return () => {
       mountedRef.current = false
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
-      // Hanya tutup jika belum CLOSED (readyState 3)
-      if (ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
+      // Null-out semua handler terlebih dahulu agar tidak ada state update
+      // dari WebSocket yang sedang ditutup (penting untuk React StrictMode)
+      ws.onopen    = null
+      ws.onerror   = null
+      ws.onclose   = null
+      ws.onmessage = null
+      // Hanya tutup jika sudah OPEN; jangan tutup saat CONNECTING
+      // (menutup saat CONNECTING menyebabkan error browser di dev mode)
+      if (ws.readyState === WebSocket.OPEN) {
         ws.close()
       }
     }
@@ -100,10 +169,49 @@ export default function ChatRoom({ username, room, onBack }) {
     if (!ws || ws.readyState === WebSocket.CLOSED) {
       const newWs = createWebSocket(room.id, username)
       wsRef.current = newWs
-      newWs.onopen    = () => { if (mountedRef.current) { setWsReady(true); setBeError(false) } }
-      newWs.onerror   = () => { if (mountedRef.current) setBeError(true) }
-      newWs.onclose   = () => { if (mountedRef.current) setWsReady(false) }
-      newWs.onmessage = ws.onmessage
+      newWs.onopen  = () => { if (mountedRef.current) { setWsReady(true); setBeError(false) } }
+      newWs.onerror = () => { if (mountedRef.current) setBeError(true) }
+      newWs.onclose = () => { if (mountedRef.current) setWsReady(false) }
+      newWs.onmessage = e => {
+        if (!mountedRef.current) return
+        try {
+          const d = JSON.parse(e.data)
+          if (d.type === 'message')
+            setMessages(p => [...p, {
+              id: d.id ?? Date.now(),
+              type: 'message',
+              username: d.username,
+              text: d.text,
+              timestamp: d.timestamp,
+              self: d.username === username,
+            }])
+          if (d.type === 'moderation' || d.type === 'system')
+            setMessages(p => [...p, {
+              id: Date.now() + Math.random(),
+              type: d.type,
+              text: d.text,
+              status: d.status || null,
+              violation_id: d.violation_id ?? null,
+              can_review: d.can_review ?? false,
+            }])
+        } catch {
+          // JSON parse error — abaikan frame tidak valid
+        }
+      }
+    }
+  }
+
+  const handleFlag = async (msg) => {
+    if (!window.confirm('Laporkan pesan ini ke admin?')) return
+    try {
+      await import('../services/api').then(m => m.flagMessage({
+        room_id: room.id,
+        reporter: username,
+        text: msg.text,
+      }))
+      alert('Laporan terkirim ke admin. Terima kasih!')
+    } catch {
+      alert('Gagal mengirim laporan. Coba lagi.')
     }
   }
 
@@ -160,6 +268,7 @@ export default function ChatRoom({ username, room, onBack }) {
             Menghubungkan...
           </div>
         )}
+
       </div>
 
       {beError && (
@@ -180,7 +289,22 @@ export default function ChatRoom({ username, room, onBack }) {
         {messages.length === 0 && !beError && (
           <div className="sys-msg" style={{ marginTop:16 }}>Belum ada pesan · Jadilah yang pertama! 👋</div>
         )}
-        {messages.map(m => <ChatBubble key={m.id} message={m} />)}
+        {messages.map(m => (
+          <div key={m.id} className="bubble-wrap">
+            <ChatBubble message={m} />
+            {m.type === 'message' && !m.self && (
+              <button
+                className="btn-flag"
+                title="Laporkan pesan ini"
+                onClick={() => handleFlag(m)}
+              >🚩</button>
+            )}
+            {/* Tombol Ajukan Review — muncul di bawah notifikasi MERAGUKAN milik user sendiri */}
+            {m.type === 'moderation' && m.status === 'MERAGUKAN' && (
+              <ReviewButton violationId={m.violation_id} />
+            )}
+          </div>
+        ))}
         <div ref={bottomRef} />
       </div>
 

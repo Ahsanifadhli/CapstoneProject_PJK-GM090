@@ -5,16 +5,24 @@ import json
 import sqlite3
 import hashlib
 import secrets
+import bcrypt
 from datetime import datetime
 from typing import Dict, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, HTTPException, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from passlib.context import CryptContext
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# ── Password hashing (bcrypt langsung, tanpa passlib) ───────────────────────────
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def verify_password(password: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+    except Exception:
+        return False
 
 load_dotenv()
 
@@ -135,12 +143,19 @@ def init_db():
             password   TEXT    NOT NULL,
             created_at TEXT    NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS sessions (
+            token      TEXT    PRIMARY KEY,
+            user_id    INTEGER NOT NULL,
+            username   TEXT    NOT NULL,
+            created_at TEXT    NOT NULL
+        );
     """)
     conn.commit()
     # Migrasi untuk database lama yang belum punya kolom baru
     for migration in [
         "ALTER TABLE violations ADD COLUMN can_review INTEGER DEFAULT 0",
         "ALTER TABLE violations ADD COLUMN label TEXT DEFAULT 'TIDAK PANTAS'",
+        "ALTER TABLE violations ADD COLUMN review_requested INTEGER DEFAULT 0",
     ]:
         try:
             conn.execute(migration)
@@ -149,6 +164,20 @@ def init_db():
             pass  # kolom sudah ada
     conn.close()
     print("[AI SHIELD] Database initialized.")
+
+
+def verify_token(token: str) -> Optional[dict]:
+    """Verifikasi token dari tabel sessions.
+    Return dict {user_id, username} jika valid, None jika tidak."""
+    if not token:
+        return None
+    conn = get_db()
+    row = conn.execute(
+        "SELECT user_id, username FROM sessions WHERE token=?",
+        (token,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 init_db()
 
@@ -241,7 +270,7 @@ def register(req: RegisterRequest):
     if not req.password or len(req.password) < 6:
         raise HTTPException(status_code=400, detail="Password minimal 6 karakter")
 
-    hashed = pwd_context.hash(req.password)
+    hashed = hash_password(req.password)
     now    = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn   = get_db()
     try:
@@ -270,16 +299,53 @@ def login(req: LoginRequest):
         "SELECT * FROM users WHERE email=?",
         (req.email.strip().lower(),)
     ).fetchone()
-    conn.close()
 
-    if not row or not pwd_context.verify(req.password, row["password"]):
+    if not row or not verify_password(req.password, row["password"]):
+        conn.close()
         raise HTTPException(status_code=401, detail="Email atau password salah")
+
+    # Generate session token
+    token = secrets.token_hex(32)
+    now   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "INSERT INTO sessions (token, user_id, username, created_at) VALUES (?,?,?,?)",
+        (token, row["id"], row["username"], now)
+    )
+    conn.commit()
+    conn.close()
 
     return {
         "success":  True,
+        "token":    token,
         "username": row["username"],
         "email":    row["email"],
         "user_id":  row["id"],
+    }
+
+
+@app.get("/api/auth/me")
+def get_me(authorization: Optional[str] = Header(default=None)):
+    """Return info user yang sedang login berdasarkan Bearer token."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token tidak ditemukan")
+
+    token   = authorization.removeprefix("Bearer ").strip()
+    session = verify_token(token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Token tidak valid atau sudah kedaluwarsa")
+
+    # Ambil email dari tabel users
+    conn = get_db()
+    row  = conn.execute(
+        "SELECT email FROM users WHERE id=?",
+        (session["user_id"],)
+    ).fetchone()
+    conn.close()
+
+    return {
+        "user_id":  session["user_id"],
+        "username": session["username"],
+        "email":    row["email"] if row else None,
     }
 
 @app.get("/api/auth/check-username/{username}")
@@ -356,14 +422,21 @@ def post_message(req: MessageRequest):
 
 # ── Admin ──────────────────────────────────────────────────────────────────────
 @app.get("/api/admin/violations")
-def get_violations(room_id: Optional[str] = None):
-    conn = get_db()
+def get_violations(
+    room_id: Optional[str] = None,
+    label:   Optional[str] = Query(default=None, description="Filter by label: MERAGUKAN, TIDAK PANTAS, DILAPORKAN")
+):
+    conn   = get_db()
+    query  = "SELECT * FROM violations WHERE 1=1"
+    params = []
     if room_id:
-        rows = conn.execute(
-            "SELECT * FROM violations WHERE room_id=? ORDER BY id DESC LIMIT 200", (room_id,)
-        ).fetchall()
-    else:
-        rows = conn.execute("SELECT * FROM violations ORDER BY id DESC LIMIT 200").fetchall()
+        query  += " AND room_id=?"
+        params.append(room_id)
+    if label:
+        query  += " AND label=?"
+        params.append(label)
+    query += " ORDER BY id DESC LIMIT 200"
+    rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -374,6 +447,78 @@ def reset_all():
     conn.execute("DELETE FROM violations")
     conn.commit(); conn.close()
     return {"message": "Semua data berhasil dihapus"}
+
+
+@app.delete("/api/admin/violations/{violation_id}")
+def delete_violation(violation_id: int):
+    """Hapus satu entri pelanggaran dari database."""
+    conn = get_db()
+    row  = conn.execute("SELECT id FROM violations WHERE id=?", (violation_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Pelanggaran tidak ditemukan")
+    conn.execute("DELETE FROM violations WHERE id=?", (violation_id,))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "Entri berhasil dihapus"}
+
+
+@app.patch("/api/admin/violations/{violation_id}/review")
+def admin_review_violation(violation_id: int, body: dict = Body(...)):
+    """
+    Admin memutuskan hasil review pesan MERAGUKAN.
+    decision: "approve" (hapus record, pesan dinyatakan pantas)
+             "reject"  (ubah label menjadi DITOLAK, tetap tercatat)
+    """
+    decision = body.get("decision", "")
+    if decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="decision harus 'approve' atau 'reject'")
+
+    conn = get_db()
+    row  = conn.execute("SELECT id, label FROM violations WHERE id=?", (violation_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Pelanggaran tidak ditemukan")
+
+    if decision == "approve":
+        conn.execute("DELETE FROM violations WHERE id=?", (violation_id,))
+        conn.commit()
+        conn.close()
+        return {"success": True, "decision": "approve", "message": "Pesan dinyatakan pantas dan dihapus dari log"}
+    else:
+        conn.execute(
+            "UPDATE violations SET label='DITOLAK', reviewed=1, can_review=0 WHERE id=?",
+            (violation_id,)
+        )
+        conn.commit()
+        conn.close()
+        return {"success": True, "decision": "reject", "message": "Pesan dikonfirmasi tidak pantas"}
+
+
+@app.patch("/api/violations/{violation_id}/request-review")
+def request_review(violation_id: int):
+    """Dipanggil oleh USER untuk pesan berstatus MERAGUKAN (can_review=1).
+    Menandai violation agar admin bisa melihatnya di dashboard."""
+    conn = get_db()
+    row  = conn.execute(
+        "SELECT id, label, can_review FROM violations WHERE id=?",
+        (violation_id,)
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Pelanggaran tidak ditemukan")
+    if row["can_review"] != 1:
+        conn.close()
+        raise HTTPException(status_code=403, detail="Pelanggaran ini tidak dapat diminta review")
+
+    conn.execute(
+        "UPDATE violations SET review_requested=1 WHERE id=?",
+        (violation_id,)
+    )
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "Permintaan review berhasil dikirim"}
 
 @app.post("/api/admin/verify")
 def verify_admin(body: dict = Body(...)):
@@ -387,33 +532,47 @@ def get_stats():
     p     = conn.execute("SELECT COUNT(*) as c FROM messages").fetchone()["c"]
     v     = conn.execute("SELECT COUNT(*) as c FROM violations WHERE label='TIDAK PANTAS'").fetchone()["c"]
     m     = conn.execute("SELECT COUNT(*) as c FROM violations WHERE label='MERAGUKAN'").fetchone()["c"]
+    d     = conn.execute("SELECT COUNT(*) as c FROM violations WHERE label='DILAPORKAN'").fetchone()["c"]
     per_room = []
     for r in ROOMS:
         pm  = conn.execute("SELECT COUNT(*) as c FROM messages WHERE room_id=?", (r["id"],)).fetchone()["c"]
         pv  = conn.execute("SELECT COUNT(*) as c FROM violations WHERE room_id=? AND label='TIDAK PANTAS'", (r["id"],)).fetchone()["c"]
         pmr = conn.execute("SELECT COUNT(*) as c FROM violations WHERE room_id=? AND label='MERAGUKAN'", (r["id"],)).fetchone()["c"]
+        pdr = conn.execute("SELECT COUNT(*) as c FROM violations WHERE room_id=? AND label='DILAPORKAN'", (r["id"],)).fetchone()["c"]
         per_room.append({
             "room_id": r["id"], "name": r["name"],
-            "pantas": pm, "tidak_pantas": pv, "meragukan": pmr
+            "pantas": pm, "tidak_pantas": pv, "meragukan": pmr, "dilaporkan": pdr
         })
     conn.close()
-    total = p + v + m
+    total = p + v + m + d
     return {
         "total_messages":  total,
         "pantas":          p,
         "tidak_pantas":    v,
         "meragukan":       m,
-        "moderation_rate": round((v + m) / total * 100, 1) if total > 0 else 0,
+        "dilaporkan":      d,
+        "moderation_rate": round((v + m + d) / total * 100, 1) if total > 0 else 0,
         "per_room":        per_room,
     }
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────
 @app.websocket("/ws/{room_id}/{username}")
-async def websocket_endpoint(websocket: WebSocket, room_id: str, username: str):
+async def websocket_endpoint(
+    websocket: WebSocket,
+    room_id:   str,
+    username:  str,
+    token:     Optional[str] = Query(default=None)
+):
     # Validasi room_id
     valid_ids = {r["id"] for r in ROOMS}
     if room_id not in valid_ids:
         await websocket.close(code=4004)
+        return
+
+    # Validasi token & cocokkan username
+    session = verify_token(token) if token else None
+    if not session or session["username"] != username:
+        await websocket.close(code=4001)
         return
 
     await manager.connect(websocket, room_id, username)

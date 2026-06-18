@@ -1,5 +1,5 @@
 import React, { useState } from "react"
-import { loginUser } from "../services/api"
+import { registerUser } from "../services/api"
 
 // ── SVG Icons ─────────────────────────────────────────────────────────────────
 const EyeIcon = () => (
@@ -17,37 +17,46 @@ const EyeOffIcon = () => (
     <line x1="1" y1="1" x2="23" y2="23"/>
   </svg>
 )
-const LockIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
-    fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-  </svg>
-)
 
-export default function Login({ onLogin, onAdminLogin, onGoRegister, successMessage }) {
-  const [email, setEmail]       = useState("")
-  const [password, setPassword] = useState("")
-  const [showPass, setShowPass] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError]       = useState("")
+export default function Register({ onRegistered, onGoLogin }) {
+  const [username, setUsername]         = useState("")
+  const [email, setEmail]               = useState("")
+  const [password, setPassword]         = useState("")
+  const [confirmPassword, setConfirm]   = useState("")
+  const [showPass, setShowPass]         = useState(false)
+  const [showConfirm, setShowConfirm]   = useState(false)
+  const [submitting, setSubmitting]     = useState(false)
+  const [error, setError]               = useState("")
+
+  const validate = () => {
+    if (!username.trim() || !email.trim() || !password || !confirmPassword)
+      return "Semua field wajib diisi."
+    if (username.trim().length < 3)
+      return "Username minimal 3 karakter."
+    if (!email.includes("@"))
+      return "Format email tidak valid."
+    if (password.length < 6)
+      return "Password minimal 6 karakter."
+    if (password !== confirmPassword)
+      return "Konfirmasi password tidak cocok."
+    return null
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError("")
-    const em = email.trim()
-    const pw = password
-    if (!em || !pw) return setError("Email dan password wajib diisi.")
+    const validationError = validate()
+    if (validationError) return setError(validationError)
     setSubmitting(true)
     try {
-      const r = await loginUser({ email: em, password: pw })
-      const { username, email: userEmail, user_id, token } = r.data
-      // Simpan session ke sessionStorage
-      sessionStorage.setItem('aishield_user',  JSON.stringify({ username, email: userEmail, user_id }))
-      sessionStorage.setItem('aishield_token', token)
-      onLogin({ username, email: userEmail, user_id })
+      await registerUser({
+        username: username.trim(),
+        email:    email.trim().toLowerCase(),
+        password,
+      })
+      onRegistered("Akun berhasil dibuat! Silakan masuk dengan akun Anda.")
     } catch (err) {
-      setError(err.response?.data?.detail || "Email atau password salah.")
+      setError(err.response?.data?.detail || "Registrasi gagal. Coba lagi.")
       setSubmitting(false)
     }
   }
@@ -79,21 +88,21 @@ export default function Login({ onLogin, onAdminLogin, onGoRegister, successMess
               <span className="feat-icon">🛡</span>
               <div>
                 <strong>Moderasi Real-Time</strong>
-                <p>Didukung model IndoBERT yang dilatih khusus untuk teks akademik Indonesia</p>
+                <p>IndoBERT dilatih khusus untuk teks akademik Indonesia</p>
               </div>
             </li>
             <li className="hero-feat">
               <span className="feat-icon">⚡</span>
               <div>
-                <strong>Deteksi Otomatis</strong>
-                <p>Bahasa tidak pantas terdeteksi sebelum pesan terkirim ke forum</p>
+                <strong>3-Label Detection</strong>
+                <p>PANTAS · MERAGUKAN · TIDAK PANTAS dengan confidence score</p>
               </div>
             </li>
             <li className="hero-feat">
-              <span className="feat-icon">📊</span>
+              <span className="feat-icon">🔒</span>
               <div>
-                <strong>Dashboard Admin</strong>
-                <p>Pemantauan pelanggaran, statistik, dan analitik moderasi real-time</p>
+                <strong>Data Aman</strong>
+                <p>Password dienkripsi dengan bcrypt, tidak pernah disimpan plaintext</p>
               </div>
             </li>
           </ul>
@@ -111,18 +120,6 @@ export default function Login({ onLogin, onAdminLogin, onGoRegister, successMess
 
       {/* ── RIGHT: Form ── */}
       <div className="login-form-panel">
-
-        {/* Tombol Admin — pill/badge style */}
-        <button
-          className="btn-admin-pill"
-          onClick={onAdminLogin}
-          type="button"
-          title="Akses Admin Dashboard"
-        >
-          <LockIcon />
-          <span>Admin</span>
-        </button>
-
         <div className="login-form-inner">
 
           {/* Brand mark */}
@@ -132,16 +129,9 @@ export default function Login({ onLogin, onAdminLogin, onGoRegister, successMess
           </div>
 
           <div className="form-heading">
-            <h1 className="form-title">Masuk ke Akun</h1>
-            <p className="form-desc">Bergabung ke ruang diskusi akademik yang termoderasi AI</p>
+            <h1 className="form-title">Buat Akun Baru</h1>
+            <p className="form-desc">Daftar untuk bergabung ke forum akademik AI SHIELD</p>
           </div>
-
-          {/* Success banner (dari redirect register) */}
-          {successMessage && (
-            <div className="auth-success-banner">
-              <span>✓</span> {successMessage}
-            </div>
-          )}
 
           {/* Error */}
           {error && (
@@ -149,32 +139,47 @@ export default function Login({ onLogin, onAdminLogin, onGoRegister, successMess
           )}
 
           <form onSubmit={handleSubmit} className="login-form">
-            <label className="form-label" htmlFor="login-email">Email</label>
+
+            {/* Username */}
+            <label className="form-label" htmlFor="reg-username">Nama Pengguna</label>
             <input
-              id="login-email"
+              id="reg-username"
+              className="form-input"
+              type="text"
+              placeholder="minimal 3 karakter"
+              value={username}
+              onChange={e => setUsername(e.target.value)}
+              disabled={submitting}
+              autoFocus
+              autoComplete="username"
+              maxLength={30}
+            />
+
+            {/* Email */}
+            <label className="form-label" htmlFor="reg-email" style={{ marginTop: 14 }}>Email</label>
+            <input
+              id="reg-email"
               className="form-input"
               type="email"
               placeholder="email@kampus.ac.id"
               value={email}
               onChange={e => setEmail(e.target.value)}
               disabled={submitting}
-              autoFocus
               autoComplete="email"
             />
 
-            <label className="form-label" htmlFor="login-password" style={{ marginTop: 14 }}>
-              Password
-            </label>
+            {/* Password */}
+            <label className="form-label" htmlFor="reg-password" style={{ marginTop: 14 }}>Password</label>
             <div className="password-wrap">
               <input
-                id="login-password"
+                id="reg-password"
                 className="form-input"
                 type={showPass ? "text" : "password"}
-                placeholder="Masukkan password"
+                placeholder="Minimal 6 karakter"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 disabled={submitting}
-                autoComplete="current-password"
+                autoComplete="new-password"
               />
               <button
                 className="password-toggle"
@@ -187,26 +192,50 @@ export default function Login({ onLogin, onAdminLogin, onGoRegister, successMess
               </button>
             </div>
 
+            {/* Confirm Password */}
+            <label className="form-label" htmlFor="reg-confirm" style={{ marginTop: 14 }}>Konfirmasi Password</label>
+            <div className="password-wrap">
+              <input
+                id="reg-confirm"
+                className="form-input"
+                type={showConfirm ? "text" : "password"}
+                placeholder="Ulangi password"
+                value={confirmPassword}
+                onChange={e => setConfirm(e.target.value)}
+                disabled={submitting}
+                autoComplete="new-password"
+              />
+              <button
+                className="password-toggle"
+                type="button"
+                onClick={() => setShowConfirm(p => !p)}
+                tabIndex={-1}
+                title={showConfirm ? "Sembunyikan" : "Tampilkan"}
+              >
+                {showConfirm ? <EyeOffIcon /> : <EyeIcon />}
+              </button>
+            </div>
+
             <button
               className="btn-primary"
               type="submit"
               style={{ marginTop: 22 }}
-              disabled={!email.trim() || !password || submitting}
+              disabled={submitting || !username || !email || !password || !confirmPassword}
             >
               {submitting ? (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                   <span className="admin-login-spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />
-                  Memuat...
+                  Mendaftarkan...
                 </span>
-              ) : "Masuk →"}
+              ) : "Daftar →"}
             </button>
           </form>
 
-          {/* Link ke Register */}
+          {/* Link ke Login */}
           <p className="form-footer-link">
-            Belum punya akun?{" "}
-            <button className="link-btn" type="button" onClick={onGoRegister}>
-              Daftar
+            Sudah punya akun?{" "}
+            <button className="link-btn" type="button" onClick={onGoLogin}>
+              Masuk
             </button>
           </p>
 

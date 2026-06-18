@@ -19,7 +19,7 @@ const DEFAULT_ROOMS = [
   { id:'forum-karir',    name:'Forum Karir & Magang',   desc:'Info lowongan, tips karir, dan peluang magang',     online:4  },
 ]
 
-export default function RoomList({ username, onJoinRoom, onLogout }) {
+export default function RoomList({ username, onJoinRoom, onLogout, onProfile }) {
   const [rooms, setRooms] = useState(DEFAULT_ROOMS)
   const [loading, setLoading] = useState(true)
 
@@ -42,10 +42,15 @@ export default function RoomList({ username, onJoinRoom, onLogout }) {
           <div className="brand-name">AI <span>SHIELD</span></div>
         </div>
         <div className="header-actions">
-          <div className="user-pill">
-            <div className="user-pill-avatar">{username.slice(0,2).toUpperCase()}</div>
+          <button
+            className="user-pill"
+            onClick={onProfile}
+            title="Lihat profil saya"
+            style={{ cursor: 'pointer', background: 'none', border: '1px solid var(--border)', borderRadius: 99, padding: '0 14px 0 6px', display: 'flex', alignItems: 'center', gap: 8, height: 36 }}
+          >
+            <div className="user-pill-avatar">{username.slice(0,1).toUpperCase()}</div>
             <span className="user-pill-name">{username}</span>
-          </div>
+          </button>
           <button className="btn-sm" onClick={onLogout} title="Keluar dari sesi">Keluar</button>
         </div>
       </div>

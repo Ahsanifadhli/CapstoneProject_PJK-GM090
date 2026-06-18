@@ -3,6 +3,9 @@ uvicorn[standard]==0.29.0
 python-dotenv==1.0.1
 pydantic>=2.0.0
 passlib[bcrypt]==1.7.4
+# Pin bcrypt eksplisit — diperlukan agar passlib 1.7.4 tidak konflik
+# dengan bcrypt >=4.1.x yang mengubah internal API __about__
+bcrypt==4.0.1
 python-jose[cryptography]==3.3.0
 # Diperlukan saat inference.py dari AI Engineer sudah tersedia.
 # Uncomment baris berikut jika model IndoBERT sudah siap:

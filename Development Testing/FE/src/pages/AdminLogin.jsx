@@ -1,24 +1,28 @@
 import React, { useState } from "react"
-
-const ADMIN_PASSWORD = "admin123"
+import { verifyAdmin } from "../services/api"
 
 export default function AdminLogin({ onSuccess, onBack }) {
-  const [password, setPassword]   = useState("")
-  const [error, setError]         = useState(false)
-  const [loading, setLoading]     = useState(false)
+  const [password, setPassword] = useState("")
+  const [error, setError]       = useState(false)
+  const [loading, setLoading]   = useState(false)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError(false)
     setLoading(true)
-    // Simulate brief async check (mirrors real API call pattern)
-    await new Promise(r => setTimeout(r, 400))
-    setLoading(false)
-    if (password === ADMIN_PASSWORD) {
-      onSuccess()
-    } else {
+    try {
+      const r = await verifyAdmin({ password })
+      if (r.data?.success) {
+        onSuccess()
+      } else {
+        setError(true)
+        setPassword("")
+      }
+    } catch {
       setError(true)
       setPassword("")
+    } finally {
+      setLoading(false)
     }
   }
 
