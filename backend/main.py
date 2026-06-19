@@ -348,6 +348,25 @@ def get_me(authorization: Optional[str] = Header(default=None)):
         "email":    row["email"] if row else None,
     }
 
+class ChangePasswordRequest(BaseModel):
+    email: str
+    old_password: str
+    new_password: str
+
+@app.patch("/api/auth/change-password")
+def change_password(req: ChangePasswordRequest):
+    if len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password baru minimal 6 karakter")
+    conn = get_db()
+    row  = conn.execute("SELECT * FROM users WHERE email=?", (req.email.strip().lower(),)).fetchone()
+    if not row or not verify_password(req.old_password, row["password"]):
+        conn.close()
+        raise HTTPException(status_code=401, detail="Password lama salah")
+    hashed = hash_password(req.new_password)
+    conn.execute("UPDATE users SET password=? WHERE email=?", (hashed, req.email.strip().lower()))
+    conn.commit(); conn.close()
+    return {"success": True, "message": "Password berhasil diubah"}
+
 @app.get("/api/auth/check-username/{username}")
 def check_username(username: str):
     conn = get_db()
@@ -554,6 +573,39 @@ def get_stats():
         "moderation_rate": round((v + m + d) / total * 100, 1) if total > 0 else 0,
         "per_room":        per_room,
     }
+
+@app.get("/api/admin/users")
+def get_users():
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, username, email, created_at FROM users ORDER BY id DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+@app.delete("/api/admin/users/{user_id}")
+def delete_user(user_id: int):
+    conn = get_db()
+    row = conn.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="User tidak ditemukan")
+    conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+    conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+    conn.commit(); conn.close()
+    return {"success": True}
+
+@app.post("/api/flag")
+def flag_message(body: dict = Body(...)):
+    conn = get_db()
+    now  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "INSERT INTO violations (room_id,username,text,confidence,label,can_review,created_at) VALUES (?,?,?,?,?,?,?)",
+        (body.get("room_id",""), body.get("reporter",""),
+         f"[DILAPORKAN] {body.get('text','')}", 0.5, "DILAPORKAN", 1, now)
+    )
+    conn.commit(); conn.close()
+    return {"success": True}
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────
 @app.websocket("/ws/{room_id}/{username}")

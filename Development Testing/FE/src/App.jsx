@@ -49,9 +49,10 @@ export default function App() {
 
   if (splash) return <SplashScreen />
 
-  const handleLogin = (username, email) => {
+  const handleLogin = (username, email, token) => {
     const userData = { username, email }
     sessionStorage.setItem('aishield_user', JSON.stringify(userData))
+    sessionStorage.setItem('aishield_token', token || '')
     setUser(userData)
     setDisplayName(username)
     setUserEmail(email)
@@ -60,6 +61,7 @@ export default function App() {
 
   const handleLogout = () => {
     sessionStorage.removeItem('aishield_user')
+    sessionStorage.removeItem('aishield_token')
     setUser(null)
     setDisplayName('')
     setUserEmail('')

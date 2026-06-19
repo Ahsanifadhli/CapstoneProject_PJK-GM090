@@ -19,7 +19,7 @@ export default function AuthPage({ onLogin, onAdminLogin }) {
     setLoading(true)
     try {
       const r = await api.post('/api/auth/login', { email, password })
-      onLogin(r.data.username, r.data.email)
+      onLogin(r.data.username, r.data.email, r.data.token)
     } catch (e) {
       setError(e.response?.data?.detail || 'Email atau password salah.')
     } finally { setLoading(false) }

@@ -39,5 +39,6 @@ export const requestReview = (id) => api.patch(`/api/violations/${id}/request-re
 export const flagMessage   = (body)   => api.post('/api/flag', body)
 
 export const createWebSocket = (roomId, username) => {
-  return new WebSocket(`${WS_URL}/ws/${roomId}/${encodeURIComponent(username)}`)
+  const token = sessionStorage.getItem('aishield_token') || ''
+  return new WebSocket(`${WS_URL}/ws/${roomId}/${encodeURIComponent(username)}?token=${encodeURIComponent(token)}`)
 }

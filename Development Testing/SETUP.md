@@ -30,18 +30,24 @@ cd "Development Testing/BE"
 # Buat virtual environment (hanya perlu sekali)
 python -m venv venv
 
-# Aktifkan virtual environment
+# Install dependency (hanya perlu sekali) — panggil python venv langsung,
+# tidak perlu "activate" supaya tidak terikat jenis terminal (cmd/PowerShell/bash)
 # Windows:
-venv\Scripts\activate
+venv\Scripts\python.exe -m pip install -r requirements.txt
 # Mac/Linux:
-source venv/bin/activate
-
-# Install dependency (hanya perlu sekali)
-pip install -r requirements.txt
+venv/bin/python -m pip install -r requirements.txt
 
 # Jalankan server
-uvicorn main:app --reload --port 8000
+# Windows:
+venv\Scripts\python.exe -m uvicorn main:app --reload --port 8000
+# Mac/Linux:
+venv/bin/python -m uvicorn main:app --reload --port 8000
 ```
+
+> Catatan: memanggil `venv\Scripts\python.exe` langsung menghindari masalah
+> "activate tidak berjalan" yang berbeda-beda tergantung terminal yang dipakai
+> (PowerShell butuh execution policy, Git Bash butuh `source ... /Scripts/activate`,
+> cmd butuh `venv\Scripts\activate.bat`). Cara di atas bekerja di semua terminal.
 
 Server berjalan di: http://localhost:8000
 Dokumentasi API otomatis: http://localhost:8000/docs
