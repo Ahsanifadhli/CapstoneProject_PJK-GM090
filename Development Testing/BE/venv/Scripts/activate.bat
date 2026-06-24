@@ -8,7 +8,7 @@ if defined _OLD_CODEPAGE (
     "%SystemRoot%\System32\chcp.com" 65001 > nul
 )
 
-set VIRTUAL_ENV=C:\Users\ASUS\OneDrive\Documents\TUGAS PIJAK\CapstoneProject_PJK-GM090\Development Testing\BE\venv
+set VIRTUAL_ENV=C:\Users\ASUS\OneDrive\ドキュメント\PIJAK\CapstoneProject_PJK-GM090\Development Testing\BE\venv
 
 if not defined PROMPT set PROMPT=$P$G
 
